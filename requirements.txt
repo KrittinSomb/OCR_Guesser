@@ -1,1 +1,6 @@
-pytesseractopencv-pythonPillowmsspyautoguikeyboardtk
+pytesseract
+opencv-python
+Pillow
+mss
+pyautogui
+keyboard
