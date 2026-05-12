@@ -25,7 +25,7 @@ An automated utility designed to assist in "Binary Search" style games or tasks 
 2. **Install dependencies:**
    - On Windows, you can run:
      ```bash
-     install_libs.bat
+     setup.bat
      ```
    - Or install manually via pip:
      ```bash
