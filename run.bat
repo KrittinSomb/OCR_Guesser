@@ -6,5 +6,4 @@ if not exist venv\Scripts\activate.bat (
 )
 
 call venv\Scripts\activate.bat
-python guesser.py
-pause
+start "OCR Guesser" /min python guesser.py

@@ -1,4 +1,4 @@
-pytesseract
+rapidocr-onnxruntime
 opencv-python
 Pillow
 mss

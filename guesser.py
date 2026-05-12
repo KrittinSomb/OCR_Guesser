@@ -1,6 +1,6 @@
 import tkinter as tk
 from PIL import Image, ImageTk, ImageGrab
-import pytesseract
+from rapidocr_onnxruntime import RapidOCR
 import cv2
 import numpy as np
 import mss
@@ -8,9 +8,8 @@ import keyboard
 import os
 import re
 
-# --- CONFIGURATION ---
-# If tesseract is not in your PATH, uncomment and set the path:
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# Initialize OCR
+ocr = RapidOCR()
 
 class RegionSelector:
     def __init__(self):
@@ -21,10 +20,15 @@ class RegionSelector:
         self.canvas = tk.Canvas(self.root, cursor="cross", bg="grey")
         self.canvas.pack(fill="both", expand=True)
         
+        # Instruction text on the screen
+        self.canvas.create_text(self.root.winfo_screenwidth()//2, 100, 
+                                text="1. Draw box over MIN number", 
+                                font=("Consolas", 32, "bold"), fill="yellow", tags="instruction")
+        
         self.start_x = None
         self.start_y = None
         self.rect = None
-        self.selection = None
+        self.selections = []
 
         self.canvas.bind("<ButtonPress-1>", self.on_button_press)
         self.canvas.bind("<B1-Motion>", self.on_move_press)
@@ -42,13 +46,27 @@ class RegionSelector:
 
     def on_button_release(self, event):
         end_x, end_y = (event.x, event.y)
-        self.selection = (min(self.start_x, end_x), min(self.start_y, end_y), 
-                          max(self.start_x, end_x), max(self.start_y, end_y))
-        self.root.destroy()
+        
+        # Avoid accidental clicks
+        if abs(end_x - self.start_x) < 5 or abs(end_y - self.start_y) < 5:
+            return
+            
+        region = (min(self.start_x, end_x), min(self.start_y, end_y), 
+                  max(self.start_x, end_x), max(self.start_y, end_y))
+        self.selections.append(region)
+        
+        # Turn the completed rectangle green
+        self.canvas.itemconfig(self.rect, outline="green")
+        self.rect = None
+        
+        if len(self.selections) == 1:
+            self.canvas.itemconfig("instruction", text="2. Draw box over MAX number")
+        elif len(self.selections) == 2:
+            self.root.destroy()
 
     def get_selection(self):
         self.root.mainloop()
-        return self.selection
+        return self.selections
 
 def preprocess_image(img):
     # Convert to grayscale
@@ -62,48 +80,99 @@ def get_numbers_from_screen(region):
         monitor = {"top": region[1], "left": region[0], "width": region[2]-region[0], "height": region[3]-region[1]}
         img = sct.grab(monitor)
         img_np = np.array(img)
-        # Convert BGRA to RGB
         img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGRA2RGB)
         
-        processed = preprocess_image(img_rgb)
-        text = pytesseract.image_to_string(processed, config='--psm 6 digits')
+        # --- RapidOCR Preprocessing ---
+        # RapidOCR is extremely smart and handles complex fonts and backgrounds naturally.
+        # We just need to scale the image up slightly to help it see tiny game fonts.
+        scaled = cv2.resize(img_rgb, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        
+        # Run OCR
+        result, _ = ocr(scaled)
+        
+        text = ""
+        if result:
+            for line in result:
+                text += line[1] + " "
+        
         # Extract numbers using regex
         nums = re.findall(r'\d+', text)
         return [int(n) for n in nums]
 
 def main():
     print("=== OCR Binary Search Guesser ===")
-    print("1. Please select the region where the numbers (min - max) are displayed.")
     selector = RegionSelector()
-    region = selector.get_selection()
+    regions = selector.get_selection()
     
-    if not region:
-        print("No region selected. Exiting.")
+    if len(regions) < 2:
+        print("Not enough regions selected. Exiting.")
         return
 
-    print(f"Region selected: {region}")
-    print("Press F9 to capture and calculate the next guess.")
-    print("Press ESC to exit.")
+    region_min = regions[0]
+    region_max = regions[1]
+    
+    # --- Overlay UI ---
+    overlay = tk.Tk()
+    overlay.title("OCR Guesser Overlay")
+    overlay.attributes("-topmost", True)
+    overlay.attributes("-alpha", 0.85)
+    overlay.overrideredirect(True) # Remove window borders
+    overlay.geometry("+20+20") # Spawn at top-left
+    overlay.configure(bg='#1e1e1e')
+    
+    label = tk.Label(overlay, text="Ready. Press F9 to guess.\nPress ESC to exit.", 
+                     font=("Consolas", 14, "bold"), fg="#00FF00", bg="#1e1e1e", justify="left")
+    label.pack(padx=15, pady=10)
 
-    while True:
-        if keyboard.is_pressed('f9'):
-            try:
-                nums = get_numbers_from_screen(region)
-                if len(nums) >= 2:
-                    low = min(nums)
-                    high = max(nums)
-                    guess = (low + high) // 2
-                    print(f"Detected: {low} - {high} | Suggest Guess: {guess}")
+    # Variables for drag functionality
+    drag_data = {"x": 0, "y": 0}
+
+    def start_drag(event):
+        drag_data["x"] = event.x
+        drag_data["y"] = event.y
+
+    def drag(event):
+        deltax = event.x - drag_data["x"]
+        deltay = event.y - drag_data["y"]
+        x = overlay.winfo_x() + deltax
+        y = overlay.winfo_y() + deltay
+        overlay.geometry(f"+{x}+{y}")
+
+    overlay.bind("<ButtonPress-1>", start_drag)
+    overlay.bind("<B1-Motion>", drag)
+
+    def process_guess():
+        try:
+            nums_min = get_numbers_from_screen(region_min)
+            nums_max = get_numbers_from_screen(region_max)
+            
+            if nums_min and nums_max:
+                low = nums_min[0]
+                high = nums_max[0]
+                
+                mid = (low + high) / 2
+                if mid.is_integer():
+                    guess_str = str(int(mid))
                 else:
-                    print(f"Could not find enough numbers. Detected: {nums}")
-            except Exception as e:
-                print(f"Error: {e}")
-            
-            # Wait a bit to prevent multiple triggers
-            keyboard.wait('f9', trigger_on_release=True)
-            
-        if keyboard.is_pressed('esc'):
-            break
+                    guess_str = f"{int(mid)} or {int(mid) + 1}"
+                    
+                label.config(text=f"Detected: {low} - {high}\nSuggest: {guess_str}")
+            else:
+                label.config(text=f"Failed to read.\nMin: {nums_min}, Max: {nums_max}")
+        except Exception as e:
+            label.config(text=f"Error: {e}")
+
+    def on_f9():
+        overlay.after(0, process_guess)
+        
+    def on_esc():
+        overlay.after(0, overlay.destroy)
+        os._exit(0)
+
+    keyboard.add_hotkey('f9', on_f9)
+    keyboard.add_hotkey('esc', on_esc)
+
+    overlay.mainloop()
 
 if __name__ == "__main__":
     main()
